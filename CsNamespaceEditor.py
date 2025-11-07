@@ -25,20 +25,12 @@ CS_GLOB = "*.cs"
 
 def find_cs_files(root: Path, recursive: bool = True):
     if recursive:
-        for p in root.rglob(CS_GLOB):
-            if p.is_file():
-                yield p
+        yield from (p for p in root.rglob(CS_GLOB) if p.is_file())
     else:
-        for p in root.glob(CS_GLOB):
-            if p.is_file():
-                yield p
+        yield from (p for p in root.glob(CS_GLOB) if p.is_file())
 
 
 def detect_namespaces(text: str):
-    """
-    Return list of matches (style, MatchObject).
-    We keep both styles; some files can have multiple (rare, but possible).
-    """
     matches = []
     for m in FILE_SCOPED_NS.finditer(text):
         matches.append(("file-scoped", m))
@@ -61,20 +53,16 @@ def replace_namespaces(text: str, new_ns: str):
 
     def repl_block(m: re.Match):
         nonlocal replaced
+        replaced += 1  # <-- FIX: increment counter for block-scoped replacements
         brace = m.group('brace')
         return f"{m.group('indent')}namespace {new_ns}{brace}"
 
-    text = FILE_SCOPED_NS.sub(repl_file, text)
-    text = BLOCK_SCOPED_NS.sub(repl_block, text)
-    return text, replaced
+    new_text = FILE_SCOPED_NS.sub(repl_file, text)
+    new_text = BLOCK_SCOPED_NS.sub(repl_block, new_text)
+    return new_text, replaced
 
 
 def read_text_guess_encoding(path: Path):
-    """
-    Keep it simple: try utf-8-sig, fallback to utf-8 (replace),
-    then latin-1 as a last resort.
-    Return (text, encoding_used)
-    """
     try:
         txt = path.read_text(encoding="utf-8-sig")
         return txt, "utf-8-sig"
@@ -88,7 +76,6 @@ def read_text_guess_encoding(path: Path):
 
 
 def write_text_with_encoding(path: Path, text: str, encoding: str):
-    # If we detected utf-8-sig, preserve the BOM by writing with utf-8-sig
     path.write_text(text, encoding=encoding, errors="replace")
 
 
@@ -105,7 +92,7 @@ class NamespaceTool(tk.Tk):
 
         self._build_ui()
 
-        self.files = []  # list of Path
+        self.files = []
         self.scan_results = {}  # path -> dict(info)
         self._worker = None
 
@@ -113,54 +100,43 @@ class NamespaceTool(tk.Tk):
         frm_top = ttk.Frame(self, padding=10)
         frm_top.pack(side=tk.TOP, fill=tk.X)
 
-        # Folder picker
         ttk.Label(frm_top, text="Folder:").grid(row=0, column=0, sticky="w")
         ent_folder = ttk.Entry(frm_top, textvariable=self.folder_var)
         ent_folder.grid(row=0, column=1, sticky="ew", padx=6)
-        btn_browse = ttk.Button(frm_top, text="Browse…", command=self.pick_folder)
-        btn_browse.grid(row=0, column=2, padx=4)
-
+        ttk.Button(frm_top, text="Browse…", command=self.pick_folder).grid(row=0, column=2, padx=4)
         frm_top.columnconfigure(1, weight=1)
 
-        # Namespace
         ttk.Label(frm_top, text="New namespace:").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ent_ns = ttk.Entry(frm_top, textvariable=self.namespace_var)
-        ent_ns.grid(row=1, column=1, sticky="ew", padx=6, pady=(8, 0))
+        ttk.Entry(frm_top, textvariable=self.namespace_var).grid(row=1, column=1, sticky="ew", padx=6, pady=(8, 0))
 
-        # Options
         opt_frame = ttk.Frame(frm_top)
         opt_frame.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Checkbutton(opt_frame, text="Recurse into subfolders", variable=self.recurse_var).pack(side=tk.LEFT)
         ttk.Checkbutton(opt_frame, text="Create .bak backups", variable=self.backup_var).pack(side=tk.LEFT, padx=(12, 0))
 
-        # Actions
         btn_frame = ttk.Frame(frm_top)
         btn_frame.grid(row=3, column=0, columnspan=3, sticky="w", pady=(10, 0))
         ttk.Button(btn_frame, text="Scan", command=self.scan_folder).pack(side=tk.LEFT)
         self.btn_apply = ttk.Button(btn_frame, text="Apply Changes", command=self.apply_changes, state=tk.DISABLED)
         self.btn_apply.pack(side=tk.LEFT, padx=8)
 
-        # Progress
         self.progress = ttk.Progressbar(frm_top, mode="determinate", length=300)
         self.progress.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 0))
 
-        # Treeview for results
         tree_frame = ttk.Frame(self, padding=(10, 6, 10, 6))
         tree_frame.pack(fill=tk.BOTH, expand=True)
-
         cols = ("file", "style", "current_ns", "status")
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=12)
-        self.tree.heading("file", text="File")
-        self.tree.heading("style", text="Style")
-        self.tree.heading("current_ns", text="Detected Namespace(s)")
-        self.tree.heading("status", text="Status")
-        self.tree.column("file", width=400, anchor="w")
-        self.tree.column("style", width=100, anchor="w")
-        self.tree.column("current_ns", width=240, anchor="w")
-        self.tree.column("status", width=120, anchor="w")
+        for cid, title, width in (
+            ("file", "File", 400),
+            ("style", "Style", 100),
+            ("current_ns", "Detected Namespace(s)", 240),
+            ("status", "Status", 120),
+        ):
+            self.tree.heading(cid, text=title)
+            self.tree.column(cid, width=width, anchor="w")
         self.tree.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
 
-        # Log
         log_frame = ttk.LabelFrame(self, text="Log", padding=6)
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         self.log = ScrolledText(log_frame, height=8, wrap="word")
@@ -202,10 +178,7 @@ class NamespaceTool(tk.Tk):
             matches = detect_namespaces(text)
             styles = ",".join(sorted({m[0] for m in matches})) if matches else ""
             found_names = ", ".join(sorted({m[1].group('name') for m in matches})) if matches else ""
-
-            status = "ok"
-            if not matches:
-                status = "no namespace"
+            status = "ok" if matches else "no namespace"
 
             self.scan_results[p] = {
                 "encoding": enc,
@@ -246,8 +219,7 @@ class NamespaceTool(tk.Tk):
 
             for p, info in self.scan_results.items():
                 done += 1
-                matches = info["matches"]
-                if not matches:
+                if not info["matches"]:
                     self._set_row_status(p, "skipped")
                     self._set_progress(done, total)
                     continue
@@ -256,14 +228,14 @@ class NamespaceTool(tk.Tk):
                     text, enc = read_text_guess_encoding(p)
                     new_text, count = replace_namespaces(text, new_ns)
 
-                    if count > 0 and new_text != text:
+                    # Write if *any* change occurred. Count is still useful for logging.
+                    if new_text != text:
                         if self.backup_var.get():
                             bak = p.with_suffix(p.suffix + f".bak.{tstamp}")
                             try:
                                 bak.write_text(text, encoding=enc, errors="replace")
-                            except Exception:
-                                # if backup fails, still attempt to write new content, but log it
-                                self.log_line(f"[WARN] Backup failed for {p}")
+                            except Exception as be:
+                                self.log_line(f"[WARN] Backup failed for {p}: {be}")
 
                         write_text_with_encoding(p, new_text, enc)
                         replaced_files += 1
@@ -289,12 +261,10 @@ class NamespaceTool(tk.Tk):
         self.update_idletasks()
 
     def _set_row_status(self, path: Path, status: str):
-        # Update status cell of the matching row
+        # Update status cell of the matching row (best-effort; filename match)
         for iid in self.tree.get_children(""):
             vals = self.tree.item(iid, "values")
-            # vals[0] is relative path shown; so compare suffix match
-            if os.path.normpath(vals[0]).endswith(os.path.normpath(str(path.name))):
-                # set only the status column
+            if os.path.normpath(vals[0]).endswith(os.path.normpath(path.name)):
                 new_vals = list(vals)
                 new_vals[3] = status
                 self.tree.item(iid, values=new_vals)
@@ -302,7 +272,6 @@ class NamespaceTool(tk.Tk):
 
 
 def main():
-    # Windows scaling fix (optional nicety)
     if sys.platform.startswith("win"):
         try:
             import ctypes
